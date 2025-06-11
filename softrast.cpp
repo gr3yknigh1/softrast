@@ -1,4 +1,14 @@
+
 #include <cassert>
+#include <cmath>
+
+#include <array>
+#include <vector>
+#include <string>
+#include <string_view>
+#include <fstream>
+#include <sstream>
+#include <functional>
 
 #include <windows.h>
 
@@ -66,30 +76,105 @@ GetRectSize(_In_ const RECT *r,
     *h = r->bottom - r->top;
 }
 
+struct V2 {
 
-#define Win32_TextOutA_CStr(HDC, X, Y, MSG) TextOutA((HDC), (X), (Y), (MSG), CStr_GetLength((MSG)))
+    F32 x = 0;
+    F32 y = 0;
 
+    constexpr V2(F32 x_ = 0, F32 y_ = 0) noexcept : x(x_), y(y_) {}
 
+    F32 dot(V2 other) const;
+    F32 magnitude(void) const;
 
-// TODO: Scope `T` type to numeric only.
-// template <typename T>
-struct Vec2i {
-    S32 X;
-    S32 Y;
+    V2 normal(void) const;
 
-    constexpr Vec2i(S32 x = 0, S32 y = 0) noexcept
-        : X(x), Y(y)
-    { }
+    V2 perpendicular_ccw(void) const;
+    V2 perpendicular_cw(void) const;
+
+    constexpr V2
+    operator+ (V2 other) const noexcept
+    {
+        return { this->x + other.x, this->y + other.y };
+    }
+
+    constexpr V2
+    operator- (V2 other) const noexcept
+    {
+        return { this->x - other.x, this->y - other.y };
+    }
+
+    constexpr V2
+    operator* (F32 value) const noexcept
+    {
+        return { this->x * value, this->y * value };
+    }
+
+    constexpr V2
+    operator/ (F32 value) const noexcept
+    {
+        return { this->x / value, this->y / value };
+    }
 };
 
-struct Vec2u {
-    U32 X;
-    U32 Y;
+struct V3 {
 
-    constexpr Vec2u(U32 x = 0, U32 y = 0) noexcept
-        : X(x), Y(y)
-    { }
+    F32 x = 0;
+    F32 y = 0;
+    F32 z = 0;
+
+    constexpr V3
+    operator+ (V3 other) const noexcept
+    {
+        return { this->x + other.x, this->y + other.y, this->z + other.z };
+    }
+
+    constexpr V3
+    operator+ (V2 other) const noexcept
+    {
+        return { this->x + other.x, this->y + other.y, this->z };
+    }
+
+    constexpr V3
+    operator- (V3 other) const noexcept
+    {
+        return { this->x - other.x, this->y - other.y, this->z - other.z };
+    }
+
+    constexpr V3
+    operator- (V2 other) const noexcept
+    {
+        return { this->x - other.x, this->y - other.y, this->z };
+    }
+
+    template<typename Ty> constexpr Ty
+    to() const noexcept
+    {
+        static_assert("Convertion not implemented!");
+    }
+
+    template<> constexpr V2
+    to() const noexcept
+    {
+        return { this->x, this->y };
+    }
+
 };
+
+
+struct V3S32 {
+    S32 x = 0, y = 0, z = 0;
+
+    constexpr V3S32
+    operator- (S32 value) const noexcept
+    {
+        return { this->x - value, this->y - value, this->z - value };
+    }
+};
+
+
+bool point_inside_triangle(V2 p, V2 a, V2 b, V2 c);
+
+std::pair<std::vector<V3>, std::vector<S32>> load_obj(std::string_view file_name);
 
 struct Rect {
     U16 X;
@@ -159,6 +244,10 @@ global_var constexpr Color4 COLOR_YELLOW = COLOR_GREEN + COLOR_RED;
 
 global_var bool shouldStop = false;
 
+bool get_window_dim(HWND window, S32 *x, S32 *y, S32 *w, S32 *h);
+
+V2 world_to_screen(V3 v, V2 screen_size);
+
 struct Basic_Renderer {
     Color4 clear_color;
 
@@ -167,8 +256,8 @@ struct Basic_Renderer {
     U64 y_offset = 0;
 
     void *pixels_buffer = nullptr;
-    U64 pixels_width = 0;
-    U64 pixels_height = 0;
+    U32 pixels_width = 0;
+    U32 pixels_height = 0;
 
     BITMAPINFO info{};
 
@@ -202,8 +291,8 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT,  // int x
         CW_USEDEFAULT,  // int y
-        CW_USEDEFAULT,  // int width
-        CW_USEDEFAULT,  // int height
+        640,  // int width
+        640,  // int height
         nullptr,        // windowParent
         nullptr,        // menu
         instance,
@@ -212,7 +301,9 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
 
     ShowWindow(window, showMode);
 
-    global_renderer.clear_color = COLOR_GREEN;
+    global_renderer.clear_color = COLOR_WHITE;
+
+    auto [ vertexes, indexes ] = load_obj(R"(P:\softrast\cube.obj)");
 
     while (!shouldStop) {
 
@@ -227,14 +318,52 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
             DispatchMessageA(&message);
         }
 
-        USZ pitch = global_renderer.pixels_width * global_renderer.bytes_per_pixel;
+        S32 window_x = 0, window_y = 0, window_w = 0, window_h = 0;
+        assert(get_window_dim(window, &window_x, &window_y, &window_w, &window_h));
+
+        USZ pitch = global_renderer.pixels_width * global_renderer.bytes_per_pixel /* sizeof(Color4) */;
         U8 *row = static_cast<U8 *>(global_renderer.pixels_buffer);
 
-        for (U64 y = 0; y < global_renderer.pixels_height; ++y) {
+        V2 window_size { static_cast<F32>(window_w), static_cast<F32>(window_h) };
+
+        // TODO(gr3yknigh1): Calculate bounding box for each triangle
+        // and only iterate over each triangle and pixels inside this
+        // triangle (it's bounding box).
+        // [2025/06/10]
+        for (U32 y = 0; y < global_renderer.pixels_height; ++y) {
             Color4 *pixel = reinterpret_cast<Color4 *>(row);
 
-            for (U64 x = 0; x < global_renderer.pixels_width; ++x) {
-                *pixel = global_renderer.clear_color;
+            for (U32 x = 0; x < global_renderer.pixels_width; ++x) {
+                *pixel = COLOR_BLACK;
+
+                V2 p{static_cast<F32>(x), static_cast<F32>(y)};
+
+                for (USZ i = 0; i < indexes.size(); i += 3) {
+                    V2 triangle[3]{};
+                    triangle[0] = world_to_screen(vertexes[indexes[i]], window_size);
+                    triangle[1] = world_to_screen(vertexes[indexes[i + 1]], window_size);
+                    triangle[2] = world_to_screen(vertexes[indexes[i + 2]], window_size);
+
+                    if (point_inside_triangle(p, triangle[0], triangle[1], triangle[2])) {
+                        *pixel = COLOR_WHITE;
+                    }
+                }
+
+                if constexpr (0) {
+                    V2 a{ window_size.x * 0.2f, window_size.y * 0.2f };
+                    V2 b{ window_size.x * 0.6f, window_size.y * 0.4f };
+                    V2 c{ window_size.x * 0.4f, window_size.y * 0.5f };
+
+                    if (point_inside_triangle(p, a, b, c)) {
+                        *pixel = COLOR_WHITE;
+                    }
+                }
+
+                if constexpr (0) {
+                    pixel->R = MAX_U8 * p.x / window_size.x;
+                    pixel->G = MAX_U8 * p.y / window_size.y;
+                }
+
                 ++pixel;
             }
 
@@ -242,16 +371,7 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
         }
 
         HDC dc = GetDC(window);
-
-        RECT windowRect;
-        GetClientRect(window, &windowRect);
-        S32 x = windowRect.left;
-        S32 y = windowRect.top;
-        S32 width = 0, height = 0;
-        GetRectSize(&windowRect, &width, &height);
-
-        global_renderer.blit(dc, x, y, width, height);
-
+        global_renderer.blit(dc, window_x, window_y, window_w, window_h);
         ReleaseDC(window, dc);
 
     }
@@ -358,4 +478,148 @@ Basic_Renderer::resize(S32 w, S32 h)
     USZ bufferSize = w * h * this->bytes_per_pixel;
     this->pixels_buffer = VirtualAlloc(nullptr, bufferSize, MEM_COMMIT, PAGE_READWRITE);
     assert(this->pixels_buffer && "Failed to allocate memory!");
+}
+
+bool
+get_window_dim(HWND window, S32 *x, S32 *y, S32 *w, S32 *h)
+{
+    RECT window_rect{};
+    if (!GetClientRect(window, &window_rect)) {
+        return false;
+    }
+
+    if (x) {
+        *x = window_rect.left;
+    }
+
+    if (y) {
+        *y = window_rect.top;
+    }
+
+    if (w) {
+        *w = window_rect.right - window_rect.left;
+    }
+
+    if (h) {
+        *h = window_rect.bottom - window_rect.top;
+    }
+
+    return true;
+}
+
+F32
+V2::dot(V2 other) const
+{
+    return (this->x * other.x) + (this->y * other.y);
+}
+
+F32
+V2::magnitude(void) const
+{
+    return std::sqrt(this->x * this->x + this->y * this->y);
+}
+
+V2
+V2::normal(void) const
+{
+    F32 magnitude = this->magnitude();
+    return { this->x / magnitude, this->y / magnitude};
+}
+
+V2
+V2::perpendicular_cw(void) const
+{
+    return { -this->y, this->x };
+}
+
+V2
+V2::perpendicular_ccw(void) const
+{
+    return { this->y, -this->x };
+}
+
+bool
+point_inside_triangle(V2 p, V2 a, V2 b, V2 c)
+{
+
+    V2 a_side = (b - a).perpendicular_ccw();
+    if (a_side.dot(p - a) > 0) {
+        return false;
+    }
+
+    V2 b_side = (c - b).perpendicular_ccw();
+    if (b_side.dot(p - b) > 0) {
+        return false;
+    }
+
+    V2 c_side = (a - c).perpendicular_ccw();
+    if (c_side.dot(p - c) > 0) {
+        return false;
+    }
+
+    return true;
+}
+
+std::pair<std::vector<V3>, std::vector<S32>>
+load_obj(std::string_view file_name)
+{
+
+    std::ifstream file(file_name.data());
+
+    std::vector<V3> vertexes{};
+    std::vector<S32> indexes{};
+
+    std::string line{};
+    while (std::getline(file, line)) {
+        std::istringstream iss(line);
+
+        if (line.starts_with("v ")) {
+
+            C8 v = 0;
+            F32 x = 0, y = 0, z = 0;
+
+            iss >> v >> x >> y >> z;
+
+            vertexes.emplace_back(x, y, z);
+        }
+
+        if (line.starts_with("f ")) {
+
+            C8 prefix = 0, sep = 0;
+            iss >> prefix;
+
+            S32 count = 0;
+            while (!iss.eof()) {
+                S32 index = 0, stub = 0;
+                iss >> index >> sep >> stub >> sep >> stub;
+
+                if (count >= 3) {
+                    S32 a = indexes[indexes.size() - 3];
+                    S32 b = indexes[indexes.size() - 1];
+
+                    indexes.push_back(a);
+                    indexes.push_back(b);
+                }
+
+                indexes.push_back(index - 1); // In .obj index values starts from 1.
+
+                ++count;
+            }
+        }
+    }
+
+
+
+    return {vertexes, indexes};
+}
+
+V2
+world_to_screen(V3 v, V2 screen_size)
+{
+    F32 world_units_in_screen_height = 5;
+    F32 pixels_per_unit = screen_size.y / world_units_in_screen_height;
+
+    V2 offset = v.to<V2>() * pixels_per_unit;
+    return screen_size / 2 + offset;
+
 }

@@ -82,3 +82,8 @@ venv-*
 #
 imgui.ini
 .env
+
+#
+# Assets:
+#
+!/assets/*.obj
