@@ -191,42 +191,121 @@ struct V3 {
     }
 };
 
+// Matrix 3x3
+struct M3x3 {
+    V3 r0{}, r1{}, r2{};
+};
 
-struct Transform {
 
-    F32 yaw;
-
-    void
-    basis_vectors(V3 *ihat, V3 *jhat, V3 *khat) const
-    {
-        if (ihat) {
-            *ihat = { std::cos(this->yaw), 0, std::sin(this->yaw) };
-        }
-
-        if (jhat) {
-            *jhat = { 0, 1, 0 };
-        }
-
-        if (khat) {
-            *khat = { -std::sin(this->yaw), 0, std::cos(this->yaw) };
-        }
-    }
-
-    inline V3
-    to_world(V3 p) const noexcept
-    {
-        V3 ihat{}, jhat{}, khat{};
-        this->basis_vectors(&ihat, &jhat, &khat);
-        V3 result = this->transform(ihat, jhat, khat, p);
-        return result;
-    }
-
+/*
     constexpr V3
     transform(V3 ihat, V3 jhat, V3 khat, V3 p) const
     {
         // ihat - x axis, jhat - y axis, khat - z axis.
         return ihat * p.x + jhat * p.y + khat * p.z;
     }
+*/
+
+
+V3
+operator* (M3x3 m, V3 v)
+{
+    V3 ret = m.r0 * v.x + m.r1 * v.y + m.r2 * v.z;
+    return ret;
+}
+
+
+//
+// source: https://danceswithcode.net/engineeringnotes/rotations_in_3d/rotations_in_3d_part1.html
+//
+
+
+M3x3
+get_rotation_mat3x3_roll(F32 roll)
+{
+    // roll - u
+    // as eurler angle symbol
+
+    M3x3 ret{};
+
+    ret.r0 = { 1, 0, 0 };
+    ret.r1 = { 0, std::cos(roll), -std::sin(roll) };
+    ret.r2 = { 0, std::sin(roll), std::cos(roll) };
+
+    return ret;
+}
+
+
+M3x3
+get_rotation_mat3x3_pitch(F32 pitch)
+{
+    // pitch - v
+    // as eurler angle symbol
+
+    M3x3 ret{};
+
+    ret.r0 = { std::cos(pitch), 0, std::sin(pitch) };
+    ret.r1 = { 0, 1, 0 };
+    ret.r2 = { -std::sin(pitch), 0, std::cos(pitch) };
+
+    return ret;
+}
+
+
+M3x3
+get_rotation_mat3x3_yaw(F32 yaw)
+{
+    // yaw - w
+    // as eurler angle symbol
+
+    M3x3 ret{};
+
+    ret.r0 = { std::cos(yaw), -std::sin(yaw), 0 };
+    ret.r1 = { std::sin(yaw), std::cos(yaw), 0 };
+    ret.r2 = { 0, 0, 1 };
+
+    return ret;
+}
+
+
+struct Transform {
+
+    F32 roll = 0, pitch = 0, yaw = 0;
+
+    // void
+    // basis_vectors(V3 *ihat, V3 *jhat, V3 *khat) const
+    // {
+    //     if (ihat) {
+    //         *ihat = { std::cos(this->pitch), 0, std::sin(this->pitch) };
+    //     }
+
+    //     if (jhat) {
+    //         *jhat = { 0, 1, 0 };
+    //     }
+
+    //     if (khat) {
+    //         *khat = { -std::sin(this->pitch), 0, std::cos(this->pitch) };
+    //     }
+    // }
+
+    inline V3
+    to_world(V3 p) const noexcept
+    {
+        V3 result = p;
+
+        result = get_rotation_mat3x3_roll(this->roll) * result;
+        result = get_rotation_mat3x3_pitch(this->pitch) * result;
+        result = get_rotation_mat3x3_yaw(this->yaw) * result;
+
+        return result;
+    }
+
+    // constexpr V3
+    // transform(V3 ihat, V3 jhat, V3 khat, V3 p) const
+    // {
+    //     // ihat - x axis, jhat - y axis, khat - z axis.
+    //     return ihat * p.x + jhat * p.y + khat * p.z;
+    // }
 
 };
 
@@ -446,7 +525,7 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
             V3 vertexes_[3]{vertexes[indexes[i]], vertexes[indexes[i + 1]], vertexes[indexes[i + 2]]};
 
             V2 triangle[3]{};
-            Transform transform{rotation};
+            Transform transform{rotation, rotation * 0.1f, rotation * 0.3f};
 
             triangle[0] = world_to_screen(vertexes_[0], transform, window_size);
             triangle[1] = world_to_screen(vertexes_[1], transform, window_size);
