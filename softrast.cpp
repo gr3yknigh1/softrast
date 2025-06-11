@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 
+#include <algorithm>
 #include <array>
 #include <vector>
 #include <string>
@@ -9,9 +10,13 @@
 #include <fstream>
 #include <sstream>
 #include <functional>
+#include <random>
+
+#if !defined(NOMINMAX)
+#define NOMINMAX
+#endif
 
 #include <windows.h>
-
 
 typedef signed char    S8;
 typedef signed short   S16;
@@ -62,6 +67,27 @@ typedef S64 SSZ;
 #define KEY_D 0x44
 #define KEY_S 0x53
 #define KEY_W 0x57
+
+
+S64 perf_get_counter_frequency(void);
+S64 perf_get_counter(void);
+
+struct Clock {
+    S64 ticks_begin;
+    S64 ticks_end;
+    S64 frequency;
+
+    Clock(void) : ticks_begin(perf_get_counter()), ticks_end(0), frequency(perf_get_counter_frequency()) {}
+
+    inline F64
+    tick(void) noexcept
+    {
+        this->ticks_end = perf_get_counter();
+        F64 elapsed = static_cast<double>(this->ticks_end - this->ticks_begin) / static_cast<double>(this->frequency);
+        this->ticks_begin = perf_get_counter();
+        return elapsed;
+    }
+};
 
 
 /*
@@ -146,6 +172,12 @@ struct V3 {
         return { this->x - other.x, this->y - other.y, this->z };
     }
 
+    constexpr V3
+    operator* (F32 value) const noexcept
+    {
+        return { this->x * value, this->y * value, this->z * value };
+    }
+
     template<typename Ty> constexpr Ty
     to() const noexcept
     {
@@ -156,6 +188,44 @@ struct V3 {
     to() const noexcept
     {
         return { this->x, this->y };
+    }
+};
+
+
+struct Transform {
+
+    F32 yaw;
+
+    void
+    basis_vectors(V3 *ihat, V3 *jhat, V3 *khat) const
+    {
+        if (ihat) {
+            *ihat = { std::cos(this->yaw), 0, std::sin(this->yaw) };
+        }
+
+        if (jhat) {
+            *jhat = { 0, 1, 0 };
+        }
+
+        if (khat) {
+            *khat = { -std::sin(this->yaw), 0, std::cos(this->yaw) };
+        }
+    }
+
+    inline V3
+    to_world(V3 p) const noexcept
+    {
+        V3 ihat{}, jhat{}, khat{};
+        this->basis_vectors(&ihat, &jhat, &khat);
+        V3 result = this->transform(ihat, jhat, khat, p);
+        return result;
+    }
+
+    constexpr V3
+    transform(V3 ihat, V3 jhat, V3 khat, V3 p) const
+    {
+        // ihat - x axis, jhat - y axis, khat - z axis.
+        return ihat * p.x + jhat * p.y + khat * p.z;
     }
 
 };
@@ -170,6 +240,12 @@ struct V3S32 {
         return { this->x - value, this->y - value, this->z - value };
     }
 };
+
+
+struct R32 {
+    S32 x = 0, y = 0, w = 0, h = 0;
+};
+
 
 
 bool point_inside_triangle(V2 p, V2 a, V2 b, V2 c);
@@ -205,8 +281,8 @@ struct Rect {
 };
 
 
-constexpr U64
-GetOffset(U64 width, U64 y, U64 x) noexcept
+constexpr S32
+get_offset(S32 width, S32 y, S32 x) noexcept
 {
     return width * y + x;
 }
@@ -245,8 +321,8 @@ global_var constexpr Color4 COLOR_YELLOW = COLOR_GREEN + COLOR_RED;
 global_var bool shouldStop = false;
 
 bool get_window_dim(HWND window, S32 *x, S32 *y, S32 *w, S32 *h);
-
-V2 world_to_screen(V3 v, V2 screen_size);
+R32 calculate_bounding_box(V2 window_size, V2 triangle[3]);
+V2 world_to_screen(V3 v, Transform transform, V2 screen_size);
 
 struct Basic_Renderer {
     Color4 clear_color;
@@ -272,6 +348,10 @@ LRESULT CALLBACK win32_window_proc(HWND window, UINT message, WPARAM wParam, LPA
 int WINAPI
 WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR commandLine, _In_ int showMode)
 {
+    assert(AllocConsole());
+    freopen("CONOUT$", "w+", stdout); // redirect stdout to console
+    freopen("CONOUT$", "w+", stderr); // redirect stderr to console
+    freopen("CONIN$", "r+", stdin);   // redirect stdin to console
 
     persist_var LPCSTR CLASS_NAME = "Software Rasterizer";
     persist_var LPCSTR WINDOW_TITLE = "Software Rasterizer";
@@ -291,8 +371,8 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT,  // int x
         CW_USEDEFAULT,  // int y
-        640,  // int width
-        640,  // int height
+        600,  // int width
+        600 + 23,  // int height
         nullptr,        // windowParent
         nullptr,        // menu
         instance,
@@ -303,9 +383,39 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
 
     global_renderer.clear_color = COLOR_WHITE;
 
-    auto [ vertexes, indexes ] = load_obj(R"(P:\softrast\cube.obj)");
+    auto [ vertexes, indexes ] = load_obj(R"(P:\softrast\assets\cube.obj)");
+
+    using result_type = decltype(std::default_random_engine())::result_type;
+    auto engine = std::default_random_engine();
+    std::uniform_int_distribution<result_type> dist(0, MAX_U8);
+
+    auto get_random_color = [](decltype(dist) *dist, decltype(engine) *engine) -> Color4 {
+        return {
+            static_cast<U8>((*dist)(*engine)),
+            static_cast<U8>((*dist)(*engine)),
+            static_cast<U8>((*dist)(*engine)),
+            MAX_U8
+        };
+    };
+
+    Clock clock{};
+    F32 rotation = 1.0f;
+    F32 rotation_speed = 0.8f;
+
+    std::vector<Color4> colors(indexes.size());
+
+    /// XXX
+    for (USZ i = 0; i < indexes.size(); i += 3) {
+        Color4 color = get_random_color(&dist, &engine);
+        colors[i] = color;
+        colors[i + 1] = color;
+        colors[i + 2] = color;
+    }
+
 
     while (!shouldStop) {
+
+        F32 dt = static_cast<F32>(clock.tick());
 
         MSG message = {};
         while (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -318,36 +428,59 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
             DispatchMessageA(&message);
         }
 
+        rotation += rotation_speed * dt;
+
         S32 window_x = 0, window_y = 0, window_w = 0, window_h = 0;
         assert(get_window_dim(window, &window_x, &window_y, &window_w, &window_h));
 
+        V2 window_size { static_cast<F32>(window_w), static_cast<F32>(window_h) };
+
+        // printf(" window.w = %f  window.h = %f\n", window_size.x, window_size.y);
+
+        Basic_Renderer *r = &global_renderer;
+
+        // Setting screen to be gray!
+        memset(r->pixels_buffer, 69, r->pixels_width * r->pixels_height *  r->bytes_per_pixel);
+
+        for (USZ i = 0; i < indexes.size(); i += 3) {
+            V3 vertexes_[3]{vertexes[indexes[i]], vertexes[indexes[i + 1]], vertexes[indexes[i + 2]]};
+
+            V2 triangle[3]{};
+            Transform transform{rotation};
+
+            triangle[0] = world_to_screen(vertexes_[0], transform, window_size);
+            triangle[1] = world_to_screen(vertexes_[1], transform, window_size);
+            triangle[2] = world_to_screen(vertexes_[2], transform, window_size);
+
+            R32 bb = calculate_bounding_box(window_size, triangle);
+
+            for (S32 y = bb.y; y < bb.h; ++y) {
+                for (S32 x = bb.x; x < bb.w; ++x) {
+                    Color4 *pixel = static_cast<Color4 *>(r->pixels_buffer) + get_offset(r->pixels_height, x, y);
+
+                    V2 p{static_cast<F32>(x), static_cast<F32>(y)};
+
+                    if (point_inside_triangle(p, triangle[0], triangle[1], triangle[2])) {
+                        *pixel = colors[i];
+                    }
+                }
+            }
+
+
+        }
+
+        #if 0
         USZ pitch = global_renderer.pixels_width * global_renderer.bytes_per_pixel /* sizeof(Color4) */;
         U8 *row = static_cast<U8 *>(global_renderer.pixels_buffer);
 
-        V2 window_size { static_cast<F32>(window_w), static_cast<F32>(window_h) };
-
-        // TODO(gr3yknigh1): Calculate bounding box for each triangle
-        // and only iterate over each triangle and pixels inside this
-        // triangle (it's bounding box).
-        // [2025/06/10]
         for (U32 y = 0; y < global_renderer.pixels_height; ++y) {
             Color4 *pixel = reinterpret_cast<Color4 *>(row);
 
             for (U32 x = 0; x < global_renderer.pixels_width; ++x) {
-                *pixel = COLOR_BLACK;
+                //*pixel = COLOR_BLACK;
 
                 V2 p{static_cast<F32>(x), static_cast<F32>(y)};
 
-                for (USZ i = 0; i < indexes.size(); i += 3) {
-                    V2 triangle[3]{};
-                    triangle[0] = world_to_screen(vertexes[indexes[i]], window_size);
-                    triangle[1] = world_to_screen(vertexes[indexes[i + 1]], window_size);
-                    triangle[2] = world_to_screen(vertexes[indexes[i + 2]], window_size);
-
-                    if (point_inside_triangle(p, triangle[0], triangle[1], triangle[2])) {
-                        *pixel = COLOR_WHITE;
-                    }
-                }
 
                 if constexpr (0) {
                     V2 a{ window_size.x * 0.2f, window_size.y * 0.2f };
@@ -369,6 +502,7 @@ WinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prevInstance, _In_ LPSTR com
 
             row += pitch;
         }
+        #endif // #if 0
 
         HDC dc = GetDC(window);
         global_renderer.blit(dc, window_x, window_y, window_w, window_h);
@@ -614,12 +748,53 @@ load_obj(std::string_view file_name)
 }
 
 V2
-world_to_screen(V3 v, V2 screen_size)
+world_to_screen(V3 v, Transform transform, V2 screen_size)
 {
+    V3 v_world = transform.to_world(v);
+
     F32 world_units_in_screen_height = 5;
     F32 pixels_per_unit = screen_size.y / world_units_in_screen_height;
 
-    V2 offset = v.to<V2>() * pixels_per_unit;
-    return screen_size / 2 + offset;
+    V2 offset = v_world.to<V2>() * pixels_per_unit;
+    return (screen_size / 2) + offset;
 
+}
+
+R32
+calculate_bounding_box(V2 window_size, V2 triangle[3])
+{
+    R32 result{};
+
+    V2 a = triangle[0], b = triangle[1], c = triangle[2];
+
+    F32 min_x = std::min(std::min(a.x, b.x), c.x);
+    F32 min_y = std::min(std::min(a.y, b.y), c.y);
+    F32 max_x = std::max(std::max(a.x, b.x), c.x);
+    F32 max_y = std::max(std::max(a.y, b.y), c.y);
+
+    result.x = std::clamp(static_cast<S32>(min_x), 0, static_cast<S32>(window_size.x) - 1);
+    result.y = std::clamp(static_cast<S32>(min_y), 0, static_cast<S32>(window_size.y) - 1);
+
+    result.w = std::clamp(static_cast<S32>(std::ceil(max_x)), 0, static_cast<S32>(window_size.x) - 1);
+    result.h = std::clamp(static_cast<S32>(std::ceil(max_y)), 0, static_cast<S32>(window_size.y) - 1);
+
+    return result;
+}
+
+S64
+perf_get_counter_frequency(void)
+{
+    LARGE_INTEGER perf_frequency_result;
+    QueryPerformanceFrequency(&perf_frequency_result);
+    S64 perf_frequency = perf_frequency_result.QuadPart;
+    return perf_frequency;
+}
+
+S64
+perf_get_counter(void)
+{
+    LARGE_INTEGER perf_counter_result;
+    QueryPerformanceCounter(&perf_counter_result);
+    S64 perf_counter = perf_counter_result.QuadPart;
+    return perf_counter;
 }
